@@ -1,11 +1,14 @@
 import streamlit as st # Import python packages
-from snowflake.snowpark.context import get_active_session
+from snowflake.snowpark import Session
 #from snowflake.CORTEX import Complete
-
-from snowflake.core import Root
 
 import pandas as pd
 import json
+import os
+from dotenv import load_dotenv
+
+# 加载环境变量
+load_dotenv()
 
 pd.set_option("max_colwidth",None)
 
@@ -27,11 +30,37 @@ COLUMNS = [
     "category"
 ]
 
-session = get_active_session()
-root = Root(session)                         
+# 创建 Snowflake 连接
+connection_parameters = {
+    "account": "kvb68174",
+    "region": "us-east-1",
+    "user": "DIAN GAO",
+    "password": "00000000",
+    "warehouse": "COMPUTE_WH",
+    "database": "ANIMAL_DATA",
+    "schema": "PUBLIC",
+    "role": "ACCOUNTADMIN"
+}
 
-svc = root.databases[CORTEX_SEARCH_DATABASE].schemas[CORTEX_SEARCH_SCHEMA].cortex_search_services[CORTEX_SEARCH_SERVICE]
-   
+session = Session.builder.configs(connection_parameters).create()
+
+# 直接使用 search API
+def get_similar_chunks_search_service(query):
+    search_query = f"""
+        SELECT {', '.join(COLUMNS)}
+        FROM {CORTEX_SEARCH_DATABASE}.{CORTEX_SEARCH_SCHEMA}.docs_chunks_table
+        WHERE CONTAINS(chunk, '{query}')
+        LIMIT {NUM_CHUNKS}
+    """
+    if st.session_state.category_value != "ALL":
+        search_query = search_query.replace(
+            "LIMIT", 
+            f"AND category = '{st.session_state.category_value}' LIMIT"
+        )
+    
+    results = session.sql(search_query).collect()
+    return [dict(zip(COLUMNS, row)) for row in results]
+
 ### Functions
      
 def config_options():
@@ -58,18 +87,6 @@ def init_messages():
     # Initialize chat history
     if st.session_state.clear_conversation or "messages" not in st.session_state:
         st.session_state.messages = []
-
-def get_similar_chunks_search_service(query):
-
-    if st.session_state.category_value == "ALL":
-        response = svc.search(query, COLUMNS, limit=NUM_CHUNKS)
-    else: 
-        filter_obj = {"@eq": {"category": st.session_state.category_value} }
-        response = svc.search(query, COLUMNS, filter=filter_obj, limit=NUM_CHUNKS)
-
-    st.sidebar.json(response.json())
-    
-    return response.json()  
 
 def get_chat_history():
 #Get the history from the st.session_stage.messages according to the slide window parameter
