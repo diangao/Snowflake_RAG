@@ -115,16 +115,23 @@ class text_chunker:
         # Use LLM to determine pet type
         prompt = f"""
         Given the following text, identify if it refers to a large cat, small cat, large dog, or small dog.
-        Only respond with one of these options: 'Large Cat', 'Small Cat', 'Large Dog', 'Small Dog'.
+        You must ONLY respond with one of these five options (exactly as written):
+        - 'Large Cat'
+        - 'Small Cat'
+        - 'Large Dog'
+        - 'Small Dog'
+        - 'Undefined'
+
+        Choose 'Undefined' if the text cannot be clearly classified into the other four categories.
 
         Text:
         {chunk}
         """
-        # from snowflake.snowpark import Session
-        # session = Session.builder.configs({...}).create()  # 初始化 session
-        # pet_type = session.sql("SELECT SNOWFLAKE.CORTEX.COMPLETE(?, ?)", params=['mistral-large', prompt]).collect()[0][0]
         pet_type = session.sql("SELECT SNOWFLAKE.CORTEX.COMPLETE(?, ?)", params=['mistral-large', prompt]).collect()[0][0]
-        return pet_type
+        
+        # Validate response and default to 'Undefined' if not in expected values
+        valid_types = {'Large Cat', 'Small Cat', 'Large Dog', 'Small Dog', 'Undefined'}
+        return pet_type if pet_type in valid_types else 'Undefined'
 
     def summarize_condition(self, chunk: str, heading: str) -> str:
         # Use LLM to summarize condition
@@ -245,10 +252,39 @@ enhanced_results AS (
         main_heading,
         sub_heading,
         chunk,
-        SNOWFLAKE.CORTEX.COMPLETE(
-            'mistral-large',
-            'Given the following text, identify if it refers to a large cat, small cat, large dog, or small dog. Only respond with one of these options: Large Cat, Small Cat, Large Dog, Small Dog.\n\nText: ' || chunk
-        ) AS pet_type,
+        CASE 
+            WHEN NOT REGEXP_LIKE(
+                SNOWFLAKE.CORTEX.COMPLETE(
+                    'mistral-large',
+                    'Given the following text, identify if it refers to a large cat, small cat, large dog, or small dog.
+                    You must ONLY respond with one of these five options (exactly as written):
+                    - ''Large Cat''
+                    - ''Small Cat''
+                    - ''Large Dog''
+                    - ''Small Dog''
+                    - ''Undefined''
+
+                    Choose ''Undefined'' if the text cannot be clearly classified into the other four categories.
+
+                    Text: ' || chunk
+                ),
+                '^(Large Cat|Small Cat|Large Dog|Small Dog|Undefined)$'
+            ) THEN 'Undefined'
+            ELSE SNOWFLAKE.CORTEX.COMPLETE(
+                'mistral-large',
+                'Given the following text, identify if it refers to a large cat, small cat, large dog, or small dog.
+                You must ONLY respond with one of these five options (exactly as written):
+                - ''Large Cat''
+                - ''Small Cat''
+                - ''Large Dog''
+                - ''Small Dog''
+                - ''Undefined''
+
+                Choose ''Undefined'' if the text cannot be clearly classified into the other four categories.
+
+                Text: ' || chunk
+            )
+        END AS pet_type,
         SNOWFLAKE.CORTEX.COMPLETE(
             'mistral-large',
             'Based on the following text and its related heading, summarize the main condition described.\n\nHeading: ' || main_heading || '\nText: ' || chunk
@@ -289,11 +325,19 @@ SELECT * FROM docs_chunks_table;
 
 -- 创建 Cortex Search Service for 精确种类搜索
 CREATE OR REPLACE CORTEX SEARCH SERVICE EXACT_TYPE_SEARCH
-ON pet_type -- 按照 pet_type 字段精确匹配
+ON pet_type
 WAREHOUSE = COMPUTE_WH
 TARGET_LAG = '1 hour'
 AS (
-    SELECT pet_type, chunk, relative_path, file_url
+    SELECT 
+        pet_type, 
+        chunk, 
+        relative_path, 
+        file_url,
+        CASE 
+            WHEN pet_type = 'Undefined' THEN 0.5  -- 降低 Undefined 条目的权重
+            ELSE 1.0                              -- 保持其他分类的正常权重
+        END as relevance_score
     FROM docs_chunks_table
 );
 
