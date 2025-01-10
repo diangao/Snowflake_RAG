@@ -185,7 +185,7 @@ GRANT READ ON STAGE docs TO ROLE ACCOUNTADMIN;
 GRANT READ ON STAGE docs_processed TO ROLE ACCOUNTADMIN;
 GRANT WRITE ON STAGE docs_processed TO ROLE ACCOUNTADMIN;
 
--- 更新 DOCS_CHUNKS_TABLE 增加新的字段
+-- 创建表
 CREATE OR REPLACE TABLE DOCS_CHUNKS_TABLE ( 
     RELATIVE_PATH VARCHAR(16777216),
     SIZE NUMBER(38,0),
@@ -199,7 +199,7 @@ CREATE OR REPLACE TABLE DOCS_CHUNKS_TABLE (
     CATEGORY VARCHAR(16777216)
 );
 
--- 插入解析后的数据
+-- 第一步：处理文档并进行分类
 INSERT INTO docs_chunks_table (
     relative_path, 
     size, 
@@ -208,8 +208,7 @@ INSERT INTO docs_chunks_table (
     main_heading, 
     sub_heading, 
     chunk, 
-    pet_type, 
-    condition
+    pet_type
 )
 WITH chunk_results AS (
     -- 调用 text_chunker 提取基本字段
@@ -231,82 +230,82 @@ WITH chunk_results AS (
                             ELSE 'paragraph'
                          END
         )) c
-),
-classification_config AS (
-    SELECT parse_json('{
-        "task_description": "Classify the medical condition or symptom description into the appropriate pet type category based on both the heading and content. Consider the specific health issues and symptoms mentioned.",
-        "labels": [
-            {
-                "label": "Large Cat",
-                "description": "Medical conditions and symptoms specific to large cats",
-                "examples": [
-                    "Heading: Tiger Health\nContent: Common symptoms include loss of appetite and lethargy",
-                    "Heading: Lion Disease\nContent: Respiratory infections are common in big cats",
-                    "Heading: Panther Care\nContent: Regular checkups are essential for large felines"
-                ]
-            },
-            {
-                "label": "Small Cat",
-                "description": "Medical conditions and symptoms common in domestic cats and smaller felines",
-                "examples": [
-                    "Heading: Feline Health\nContent: Cats may show signs of hairballs and vomiting",
-                    "Heading: Cat Care\nContent: Common symptoms include urinary tract infections",
-                    "Heading: Kitten Health\nContent: Watch for signs of upper respiratory infections"
-                ]
-            },
-            {
-                "label": "Large Dog",
-                "description": "Medical conditions and symptoms specific to large dog breeds",
-                "examples": [
-                    "Heading: German Shepherd Health\nContent: Hip dysplasia is common in large breeds",
-                    "Heading: Great Dane Care\nContent: Bloat is a serious concern for deep-chested dogs",
-                    "Heading: Large Breed Health\nContent: Joint problems require immediate attention"
-                ]
-            },
-            {
-                "label": "Small Dog",
-                "description": "Medical conditions and symptoms common in small dog breeds",
-                "examples": [
-                    "Heading: Chihuahua Health\nContent: Dental problems are common in small breeds",
-                    "Heading: Small Dog Care\nContent: Watch for signs of patellar luxation",
-                    "Heading: Terrier Health\nContent: Respiratory issues need prompt attention"
-                ]
-            },
-            {
-                "label": "Undefined",
-                "description": "General veterinary information or conditions not specific to a particular pet type",
-                "examples": [
-                    "Heading: General Care\nContent: Regular vaccinations are important for all pets",
-                    "Heading: Emergency Care\nContent: Know when to visit the veterinarian",
-                    "Heading: Pet Health\nContent: Common signs of illness in animals"
-                ]
-            }
-        ]
-    }') as config
-),
-enhanced_results AS (
-    SELECT 
-        relative_path,
-        size,
-        file_url,
-        scoped_file_url,
-        main_heading,
-        sub_heading,
-        chunk,
-        SNOWFLAKE.CORTEX.CLASSIFY_TEXT(
-            'Heading: ' || COALESCE(main_heading, '') || '\nSubheading: ' || COALESCE(sub_heading, '') || '\nContent: ' || chunk,
-            config
-        ) AS pet_type,
-        SNOWFLAKE.CORTEX.SUMMARIZE(
-            'Medical Condition Summary:\nHeading: ' || COALESCE(main_heading, '') || 
-            '\nSubheading: ' || COALESCE(sub_heading, '') || 
-            '\nSymptoms and Conditions: ' || chunk
-        ) AS condition
-    FROM chunk_results, classification_config
 )
-SELECT * FROM enhanced_results;
+SELECT 
+    relative_path,
+    size,
+    file_url,
+    scoped_file_url,
+    main_heading,
+    sub_heading,
+    chunk,
+    SNOWFLAKE.CORTEX.CLASSIFY_TEXT(
+        CONCAT(
+            'Heading: ', 
+            main_heading,
+            '\nSubheading: ', 
+            sub_heading,
+            '\nContent: ', 
+            COALESCE(chunk, '')
+        ),
+        [{
+            'label': 'Large Cat',
+            'description': 'Medical conditions and symptoms specific to large cats',
+            'examples': [
+                'Heading: Tiger Health Content: Loss of appetite and lethargy in big cats',
+                'Heading: Lion Care Content: Respiratory infections common in large felines',
+                'Heading: Panther Health Content: Joint problems in large wild cats'
+            ]
+        }, {
+            'label': 'Small Cat',
+            'description': 'Medical conditions and symptoms common in domestic cats',
+            'examples': [
+                'Heading: Feline Health Content: Hairballs and vomiting in house cats',
+                'Heading: Cat Care Content: Urinary tract infections in domestic cats',
+                'Heading: Kitten Health Content: Upper respiratory infections in young cats'
+            ]
+        }, {
+            'label': 'Large Dog',
+            'description': 'Medical conditions and symptoms specific to large dog breeds',
+            'examples': [
+                'Heading: German Shepherd Content: Hip dysplasia common in large breeds',
+                'Heading: Great Dane Care Content: Bloat risk in deep-chested dogs',
+                'Heading: Large Breed Health Content: Joint issues requiring attention'
+            ]
+        }, {
+            'label': 'Small Dog',
+            'description': 'Medical conditions and symptoms common in small dog breeds',
+            'examples': [
+                'Heading: Chihuahua Health Content: Dental problems in tiny breeds',
+                'Heading: Small Dog Care Content: Patellar luxation symptoms',
+                'Heading: Terrier Health Content: Respiratory issues in small dogs'
+            ]
+        }, {
+            'label': 'Undefined',
+            'description': 'General veterinary information or conditions not specific to a particular pet type',
+            'examples': [
+                'Heading: General Care Content: Regular vaccination schedules for pets',
+                'Heading: Emergency Care Content: When to visit the veterinarian',
+                'Heading: Pet Health Content: Common signs of illness in animals'
+            ]
+        }],
+        {'task_description': 'Classify the medical condition or symptom description into the appropriate pet type category based on the content and headings.'}
+    ) AS pet_type
+FROM chunk_results;
 
--- 创建 Cortex 搜索服务
+-- 第二步：更新条件总结
+UPDATE docs_chunks_table t
+SET condition = SNOWFLAKE.CORTEX.SUMMARIZE(CONCAT(
+    'Medical Condition Summary:\nHeading: ', 
+    COALESCE(t.MAIN_HEADING, ''),
+    '\nSubheading: ',
+    COALESCE(t.SUB_HEADING, ''),
+    '\nSymptoms and Conditions: ',
+    t.CHUNK
+))
+WHERE t.condition IS NULL;
+
+-- 创建搜索服务
 CREATE OR REPLACE CORTEX SEARCH SERVICE exact_type_search
 ON pet_type
 ATTRIBUTES (chunk, relative_path, file_url)
@@ -326,7 +325,6 @@ ON condition
 ATTRIBUTES (chunk, relative_path, file_url)
 WAREHOUSE = COMPUTE_WH
 TARGET_LAG = '1 day'
-EMBEDDING_MODEL = 'snowflake-arctic-embed-l-v2.0'
 AS (
     SELECT 
         condition,
