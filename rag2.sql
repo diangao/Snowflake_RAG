@@ -115,23 +115,16 @@ class text_chunker:
         # Use LLM to determine pet type
         prompt = f"""
         Given the following text, identify if it refers to a large cat, small cat, large dog, or small dog.
-        You must ONLY respond with one of these five options (exactly as written):
-        - 'Large Cat'
-        - 'Small Cat'
-        - 'Large Dog'
-        - 'Small Dog'
-        - 'Undefined'
-
-        Choose 'Undefined' if the text cannot be clearly classified into the other four categories.
+        Only respond with one of these options: 'Large Cat', 'Small Cat', 'Large Dog', 'Small Dog'.
 
         Text:
         {chunk}
         """
+        # from snowflake.snowpark import Session
+        # session = Session.builder.configs({...}).create()  # 初始化 session
+        # pet_type = session.sql("SELECT SNOWFLAKE.CORTEX.COMPLETE(?, ?)", params=['mistral-large', prompt]).collect()[0][0]
         pet_type = session.sql("SELECT SNOWFLAKE.CORTEX.COMPLETE(?, ?)", params=['mistral-large', prompt]).collect()[0][0]
-        
-        # Validate response and default to 'Undefined' if not in expected values
-        valid_types = {'Large Cat', 'Small Cat', 'Large Dog', 'Small Dog', 'Undefined'}
-        return pet_type if pet_type in valid_types else 'Undefined'
+        return pet_type
 
     def summarize_condition(self, chunk: str, heading: str) -> str:
         # Use LLM to summarize condition
@@ -296,19 +289,11 @@ SELECT * FROM docs_chunks_table;
 
 -- 创建 Cortex Search Service for 精确种类搜索
 CREATE OR REPLACE CORTEX SEARCH SERVICE EXACT_TYPE_SEARCH
-ON pet_type
+ON pet_type -- 按照 pet_type 字段精确匹配
 WAREHOUSE = COMPUTE_WH
 TARGET_LAG = '1 hour'
 AS (
-    SELECT 
-        pet_type, 
-        chunk, 
-        relative_path, 
-        file_url,
-        CASE 
-            WHEN pet_type = 'Undefined' THEN 0.5  -- 降低 Undefined 条目的权重
-            ELSE 1.0                              -- 保持其他分类的正常权重
-        END as relevance_score
+    SELECT pet_type, chunk, relative_path, file_url
     FROM docs_chunks_table
 );
 
