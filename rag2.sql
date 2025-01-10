@@ -220,7 +220,7 @@ INSERT INTO docs_chunks_table (
     pet_type, 
     condition
 )
--- 使用 WITH 生成增强结果集
+-- 使用 WITH 生成增强结果集并直接插入数据
 WITH chunk_results AS (
     -- 调用 text_chunker 提取基本字段
     SELECT 
@@ -291,34 +291,7 @@ enhanced_results AS (
         ) AS condition
     FROM chunk_results
 )
--- 这里仅返回结果
 SELECT * FROM enhanced_results;
-
--- 使用 INSERT 插入增强结果到表中
-INSERT INTO docs_chunks_table (
-    relative_path, 
-    size, 
-    file_url, 
-    scoped_file_url, 
-    main_heading, 
-    sub_heading, 
-    chunk, 
-    pet_type, 
-    condition
-)
-SELECT 
-    relative_path, 
-    size, 
-    file_url, 
-    scoped_file_url, 
-    main_heading, 
-    sub_heading, 
-    chunk, 
-    pet_type, 
-    condition
-FROM enhanced_results;
-
-
 
 -- 检查表内容
 SELECT * FROM docs_chunks_table;
