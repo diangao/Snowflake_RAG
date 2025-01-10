@@ -2,7 +2,6 @@
 USE animal_data;
 
 -- 修改 text_chunker 函数以根据文件类型进行不同处理
--- 修改 text_chunker 函数
 CREATE OR REPLACE FUNCTION text_chunker(pdf_text STRING, file_type STRING)
 RETURNS TABLE (
     main_heading VARCHAR,
@@ -186,29 +185,21 @@ GRANT READ ON STAGE docs TO ROLE ACCOUNTADMIN;
 GRANT READ ON STAGE docs_processed TO ROLE ACCOUNTADMIN;
 GRANT WRITE ON STAGE docs_processed TO ROLE ACCOUNTADMIN;
 
--- 检查 stage 中的文件
-LS @docs_processed;
-
-
 -- 更新 DOCS_CHUNKS_TABLE 增加新的字段
 CREATE OR REPLACE TABLE DOCS_CHUNKS_TABLE ( 
-    RELATIVE_PATH VARCHAR(16777216), -- PDF 文件路径
-    SIZE NUMBER(38,0),              -- 文件大小
-    FILE_URL VARCHAR(16777216),     -- 文件 URL
-    SCOPED_FILE_URL VARCHAR(16777216), -- 受限 URL
-    MAIN_HEADING VARCHAR(16777216), -- 主标题
-    SUB_HEADING VARCHAR(16777216),  -- 子标题
-    CHUNK VARCHAR(16777216),        -- 文本块
-    PET_TYPE VARCHAR(50),           -- 宠物类别（增强字段）
-    CONDITION TEXT,                 -- 症状总结（增强字段）
-    CATEGORY VARCHAR(16777216)      -- 文档类别
+    RELATIVE_PATH VARCHAR(16777216),
+    SIZE NUMBER(38,0),
+    FILE_URL VARCHAR(16777216),
+    SCOPED_FILE_URL VARCHAR(16777216),
+    MAIN_HEADING VARCHAR(16777216),
+    SUB_HEADING VARCHAR(16777216),
+    CHUNK VARCHAR(16777216),
+    PET_TYPE VARCHAR(50),
+    CONDITION TEXT,
+    CATEGORY VARCHAR(16777216)
 );
 
-SHOW STAGES IN SCHEMA ANIMAL_DATA.PUBLIC;
-
-
 -- 插入解析后的数据
--- 增强并插入解析后的数据
 INSERT INTO docs_chunks_table (
     relative_path, 
     size, 
@@ -220,7 +211,6 @@ INSERT INTO docs_chunks_table (
     pet_type, 
     condition
 )
--- 使用 WITH 生成增强结果集并直接插入数据
 WITH chunk_results AS (
     -- 调用 text_chunker 提取基本字段
     SELECT 
@@ -242,8 +232,59 @@ WITH chunk_results AS (
                          END
         )) c
 ),
+classification_config AS (
+    SELECT parse_json('{
+        "task_description": "Classify the medical condition or symptom description into the appropriate pet type category based on both the heading and content. Consider the specific health issues and symptoms mentioned.",
+        "labels": [
+            {
+                "label": "Large Cat",
+                "description": "Medical conditions and symptoms specific to large cats",
+                "examples": [
+                    "Heading: Tiger Health\nContent: Common symptoms include loss of appetite and lethargy",
+                    "Heading: Lion Disease\nContent: Respiratory infections are common in big cats",
+                    "Heading: Panther Care\nContent: Regular checkups are essential for large felines"
+                ]
+            },
+            {
+                "label": "Small Cat",
+                "description": "Medical conditions and symptoms common in domestic cats and smaller felines",
+                "examples": [
+                    "Heading: Feline Health\nContent: Cats may show signs of hairballs and vomiting",
+                    "Heading: Cat Care\nContent: Common symptoms include urinary tract infections",
+                    "Heading: Kitten Health\nContent: Watch for signs of upper respiratory infections"
+                ]
+            },
+            {
+                "label": "Large Dog",
+                "description": "Medical conditions and symptoms specific to large dog breeds",
+                "examples": [
+                    "Heading: German Shepherd Health\nContent: Hip dysplasia is common in large breeds",
+                    "Heading: Great Dane Care\nContent: Bloat is a serious concern for deep-chested dogs",
+                    "Heading: Large Breed Health\nContent: Joint problems require immediate attention"
+                ]
+            },
+            {
+                "label": "Small Dog",
+                "description": "Medical conditions and symptoms common in small dog breeds",
+                "examples": [
+                    "Heading: Chihuahua Health\nContent: Dental problems are common in small breeds",
+                    "Heading: Small Dog Care\nContent: Watch for signs of patellar luxation",
+                    "Heading: Terrier Health\nContent: Respiratory issues need prompt attention"
+                ]
+            },
+            {
+                "label": "Undefined",
+                "description": "General veterinary information or conditions not specific to a particular pet type",
+                "examples": [
+                    "Heading: General Care\nContent: Regular vaccinations are important for all pets",
+                    "Heading: Emergency Care\nContent: Know when to visit the veterinarian",
+                    "Heading: Pet Health\nContent: Common signs of illness in animals"
+                ]
+            }
+        ]
+    }') as config
+),
 enhanced_results AS (
-    -- 增强数据
     SELECT 
         relative_path,
         size,
@@ -252,106 +293,48 @@ enhanced_results AS (
         main_heading,
         sub_heading,
         chunk,
-        CASE 
-            WHEN NOT REGEXP_LIKE(
-                SNOWFLAKE.CORTEX.COMPLETE(
-                    'mistral-large',
-                    'Given the following text, identify if it refers to a large cat, small cat, large dog, or small dog.
-                    You must ONLY respond with one of these five options (exactly as written):
-                    - ''Large Cat''
-                    - ''Small Cat''
-                    - ''Large Dog''
-                    - ''Small Dog''
-                    - ''Undefined''
-
-                    Choose ''Undefined'' if the text cannot be clearly classified into the other four categories.
-
-                    Text: ' || chunk
-                ),
-                '^(Large Cat|Small Cat|Large Dog|Small Dog|Undefined)$'
-            ) THEN 'Undefined'
-            ELSE SNOWFLAKE.CORTEX.COMPLETE(
-                'mistral-large',
-                'Given the following text, identify if it refers to a large cat, small cat, large dog, or small dog.
-                You must ONLY respond with one of these five options (exactly as written):
-                - ''Large Cat''
-                - ''Small Cat''
-                - ''Large Dog''
-                - ''Small Dog''
-                - ''Undefined''
-
-                Choose ''Undefined'' if the text cannot be clearly classified into the other four categories.
-
-                Text: ' || chunk
-            )
-        END AS pet_type,
-        SNOWFLAKE.CORTEX.COMPLETE(
-            'mistral-large',
-            'Based on the following text and its related heading, summarize the main condition described.\n\nHeading: ' || main_heading || '\nText: ' || chunk
+        SNOWFLAKE.CORTEX.CLASSIFY_TEXT(
+            'Heading: ' || COALESCE(main_heading, '') || '\nSubheading: ' || COALESCE(sub_heading, '') || '\nContent: ' || chunk,
+            config
+        ) AS pet_type,
+        SNOWFLAKE.CORTEX.SUMMARIZE(
+            'Medical Condition Summary:\nHeading: ' || COALESCE(main_heading, '') || 
+            '\nSubheading: ' || COALESCE(sub_heading, '') || 
+            '\nSymptoms and Conditions: ' || chunk
         ) AS condition
-    FROM chunk_results
+    FROM chunk_results, classification_config
 )
 SELECT * FROM enhanced_results;
 
--- 检查表内容
-SELECT * FROM docs_chunks_table;
-
--- 创建 Cortex Search Service for 精确种类搜索
-CREATE OR REPLACE CORTEX SEARCH SERVICE EXACT_TYPE_SEARCH
+-- 创建 Cortex 搜索服务
+CREATE OR REPLACE CORTEX SEARCH SERVICE exact_type_search
 ON pet_type
+ATTRIBUTES (chunk, relative_path, file_url)
 WAREHOUSE = COMPUTE_WH
-TARGET_LAG = '1 hour'
+TARGET_LAG = '1 day'
 AS (
     SELECT 
-        pet_type, 
-        chunk, 
-        relative_path, 
-        file_url,
-        CASE 
-            WHEN pet_type = 'Undefined' THEN 0.5  -- 降低 Undefined 条目的权重
-            ELSE 1.0                              -- 保持其他分类的正常权重
-        END as relevance_score
+        pet_type,
+        chunk,
+        relative_path,
+        file_url
     FROM docs_chunks_table
 );
 
--- 创建 Cortex Search Service for 模糊条件匹配
-CREATE OR REPLACE CORTEX SEARCH SERVICE CONDITION_MATCH_SEARCH
-ON condition  -- 按照 condition 字段进行相似性搜索
+CREATE OR REPLACE CORTEX SEARCH SERVICE condition_match_search
+ON condition
+ATTRIBUTES (chunk, relative_path, file_url)
 WAREHOUSE = COMPUTE_WH
-TARGET_LAG = '1 hour'
+TARGET_LAG = '1 day'
+EMBEDDING_MODEL = 'snowflake-arctic-embed-l-v2.0'
 AS (
-    SELECT condition, chunk, relative_path, file_url FROM docs_chunks_table
+    SELECT 
+        condition,
+        chunk,
+        relative_path,
+        file_url
+    FROM docs_chunks_table
 );
 
-
-DESCRIBE TABLE docs_chunks_table;
-
-SELECT * FROM docs_chunks_table;
-
-SELECT pet_type, chunk, relative_path, file_url
-FROM docs_chunks_table;
-SHOW FUNCTIONS LIKE 'EXACT_TYPE_SEARCH';
-
-
--- 使用 EXACT_TYPE_SEARCH 执行精确种类搜索
-SELECT *
-FROM TABLE(EXACT_TYPE_SEARCH(
-    query => 'Large Cat',  -- 示例：用户查询为"大型猫"
-    limit => 10  -- 返回最多 10 条结果
-));
-
--- 使用 CONDITION_MATCH_SEARCH 执行模糊条件匹配搜索
-SELECT *
-FROM TABLE(CONDITION_MATCH_SEARCH(
-    query => 'Electric Shock Treatment',  -- 示例：用户查询为电击治疗
-    limit => 10  -- 返回最多 10 条结果
-));
-
--- 检查 INFORMATION_SCHEMA 的表和权限
-SHOW TABLES IN SCHEMA ANIMAL_DATA.INFORMATION_SCHEMA;
+-- 检查权限
 SHOW GRANTS ON SCHEMA ANIMAL_DATA.INFORMATION_SCHEMA;
-
--- -- 查看当前会话信息
--- SELECT SESSION_ID, USER_NAME, CLIENT_APPLICATION, START_TIME
--- FROM INFORMATION_SCHEMA.SESSIONS
--- WHERE IS_CURRENT = 'TRUE';
