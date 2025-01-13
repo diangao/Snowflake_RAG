@@ -211,7 +211,6 @@ INSERT INTO docs_chunks_table (
     pet_type
 )
 WITH chunk_results AS (
-    -- 调用 text_chunker 提取基本字段
     SELECT 
         d.relative_path, 
         d.size, 
@@ -220,16 +219,15 @@ WITH chunk_results AS (
         c.main_heading,
         c.sub_heading,
         c.chunk
-    FROM 
-        directory(@docs) d,
-        TABLE(text_chunker(
-            pdf_text => TO_VARCHAR(SNOWFLAKE.CORTEX.PARSE_DOCUMENT(@docs, d.relative_path, {'mode': 'LAYOUT'})), 
-            file_type => CASE 
-                            WHEN LOWER(d.relative_path) LIKE '%cat_paragraphs%' THEN 'paragraph'
-                            WHEN LOWER(d.relative_path) LIKE '%handbook%' THEN 'table'
-                            ELSE 'paragraph'
-                         END
-        )) c
+    FROM directory(@docs) d
+    CROSS JOIN TABLE(text_chunker(
+        pdf_text => TO_VARCHAR(SNOWFLAKE.CORTEX.PARSE_DOCUMENT(@docs, d.relative_path, {'mode': 'LAYOUT'})), 
+        file_type => CASE 
+                        WHEN LOWER(d.relative_path) LIKE '%cat_paragraphs%' THEN 'paragraph'
+                        WHEN LOWER(d.relative_path) LIKE '%handbook%' THEN 'table'
+                        ELSE 'paragraph'
+                     END
+    )) c
 )
 SELECT 
     relative_path,
@@ -239,59 +237,46 @@ SELECT
     main_heading,
     sub_heading,
     chunk,
-    SNOWFLAKE.CORTEX.CLASSIFY_TEXT(
-        CONCAT(
-            'Heading: ', 
-            main_heading,
-            '\nSubheading: ', 
-            sub_heading,
-            '\nContent: ', 
-            COALESCE(chunk, '')
-        ),
-        [{
-            'label': 'Large Cat',
-            'description': 'Medical conditions and symptoms specific to large cats',
-            'examples': [
-                'Heading: Tiger Health Content: Loss of appetite and lethargy in big cats',
-                'Heading: Lion Care Content: Respiratory infections common in large felines',
-                'Heading: Panther Health Content: Joint problems in large wild cats'
-            ]
-        }, {
-            'label': 'Small Cat',
-            'description': 'Medical conditions and symptoms common in domestic cats',
-            'examples': [
-                'Heading: Feline Health Content: Hairballs and vomiting in house cats',
-                'Heading: Cat Care Content: Urinary tract infections in domestic cats',
-                'Heading: Kitten Health Content: Upper respiratory infections in young cats'
-            ]
-        }, {
-            'label': 'Large Dog',
-            'description': 'Medical conditions and symptoms specific to large dog breeds',
-            'examples': [
-                'Heading: German Shepherd Content: Hip dysplasia common in large breeds',
-                'Heading: Great Dane Care Content: Bloat risk in deep-chested dogs',
-                'Heading: Large Breed Health Content: Joint issues requiring attention'
-            ]
-        }, {
-            'label': 'Small Dog',
-            'description': 'Medical conditions and symptoms common in small dog breeds',
-            'examples': [
-                'Heading: Chihuahua Health Content: Dental problems in tiny breeds',
-                'Heading: Small Dog Care Content: Patellar luxation symptoms',
-                'Heading: Terrier Health Content: Respiratory issues in small dogs'
-            ]
-        }, {
-            'label': 'Undefined',
-            'description': 'General veterinary information or conditions not specific to a particular pet type',
-            'examples': [
-                'Heading: General Care Content: Regular vaccination schedules for pets',
-                'Heading: Emergency Care Content: When to visit the veterinarian',
-                'Heading: Pet Health Content: Common signs of illness in animals'
-            ]
-        }],
-        {'task_description': 'Classify the medical condition or symptom description into the appropriate pet type category based on the content and headings.'}
+    CAST(
+        GET_PATH(
+            PARSE_JSON(
+                SNOWFLAKE.CORTEX.CLASSIFY_TEXT(
+                    COALESCE(chunk, ''),
+                    ARRAY_CONSTRUCT('Large Cat', 'Small Cat', 'Large Dog', 'Small Dog', 'Undefined')
+                )
+            ),
+            'label'
+        ) AS STRING
     ) AS pet_type
 FROM chunk_results;
+-- SELECT * FROM docs_chunks_table LIMIT 10;
+
+-- SELECT * 
+-- FROM docs_chunks_table 
+-- WHERE category IS NULL 
+-- LIMIT 10;
+
+-- SELECT 
+--     COALESCE(MAIN_HEADING, '') AS main_heading, 
+--     COALESCE(SUB_HEADING, '') AS sub_heading, 
+--     CHUNK 
+-- FROM docs_chunks_table 
+-- WHERE condition IS NULL 
+-- LIMIT 10;
+
+-- SELECT SNOWFLAKE.CORTEX.SUMMARIZE('Sample text to summarize') AS summary;
+-- SELECT CONCAT(
+--     'Medical Condition Summary:\nHeading: ', 
+--     COALESCE(MAIN_HEADING, ''),
+--     '\nSubheading: ',
+--     COALESCE(SUB_HEADING, ''),
+--     '\nSymptoms and Conditions: ',
+--     CHUNK
+-- ) AS text_to_summarize
+-- FROM docs_chunks_table 
+-- WHERE category IS NULL 
+-- LIMIT 10;
+
 
 -- 第二步：更新条件总结
 UPDATE docs_chunks_table t
@@ -303,12 +288,19 @@ SET condition = SNOWFLAKE.CORTEX.SUMMARIZE(CONCAT(
     '\nSymptoms and Conditions: ',
     t.CHUNK
 ))
-WHERE t.condition IS NULL;
+WHERE t.category IS NULL;
+
+SELECT * FROM docs_chunks_table LIMIT 20;
+SELECT COUNT(*) AS total_chunks FROM docs_chunks_table;
+
+
+USE SCHEMA ANIMAL_DATA.PUBLIC;
+ALTER TABLE docs_chunks_table SET CHANGE_TRACKING = TRUE;
 
 -- 创建搜索服务
 CREATE OR REPLACE CORTEX SEARCH SERVICE exact_type_search
 ON pet_type
-ATTRIBUTES (chunk, relative_path, file_url)
+ATTRIBUTES chunk, relative_path, file_url
 WAREHOUSE = COMPUTE_WH
 TARGET_LAG = '1 day'
 AS (
@@ -320,9 +312,50 @@ AS (
     FROM docs_chunks_table
 );
 
+
+-- USE SCHEMA INFORMATION_SCHEMA;
+-- SELECT CURRENT_ROLE();
+-- SHOW GRANTS TO ROLE ACCOUNTADMIN;
+
+-- GRANT USAGE ON SCHEMA INFORMATION_SCHEMA TO ROLE ACCOUNTADMIN;
+-- GRANT SELECT ON ALL TABLES IN SCHEMA INFORMATION_SCHEMA TO ROLE ACCOUNTADMIN;
+
+
+-- SELECT * 
+-- FROM INFORMATION_SCHEMA.SEARCH_SERVICES;
+
+-- SELECT *
+-- FROM docs_chunks_table
+-- WHERE CONTAINS_TEXT(chunk, 'test_keyword');
+-- SHOW SEARCH SERVICES;
+
+-- SELECT *
+-- FROM docs_chunks_table
+-- WHERE chunk LIKE '%cats%';
+
+-- DESCRIBE TABLE docs_chunks_table;
+-- USE WAREHOUSE COMPUTE_WH;
+-- SHOW PARAMETERS LIKE 'CHANGE_TRACKING' IN TABLE docs_chunks_table;
+-- SHOW TABLES IN SCHEMA ANIMAL_DATA.INFORMATION_SCHEMA;
+-- SHOW TABLES LIKE 'docs_chunks_table' IN DATABASE ANIMAL_DATA;
+
+
+-- DESCRIBE TABLE ANIMAL_DATA.PUBLIC.DOCS_CHUNKS_TABLE;
+
+-- CREATE OR REPLACE CORTEX SEARCH SERVICE simple_search
+-- ON chunk
+-- ATTRIBUTES chunk
+-- WAREHOUSE = COMPUTE_WH
+-- TARGET_LAG = '1 day'
+-- AS (
+--   SELECT chunk
+--   FROM ANIMAL_DATA.PUBLIC.DOCS_CHUNKS_TABLE
+-- );
+
+
 CREATE OR REPLACE CORTEX SEARCH SERVICE condition_match_search
 ON condition
-ATTRIBUTES (chunk, relative_path, file_url)
+ATTRIBUTES chunk, relative_path, file_url
 WAREHOUSE = COMPUTE_WH
 TARGET_LAG = '1 day'
 AS (
@@ -334,5 +367,40 @@ AS (
     FROM docs_chunks_table
 );
 
+
 -- 检查权限
-SHOW GRANTS ON SCHEMA ANIMAL_DATA.INFORMATION_SCHEMA;
+SHOW GRANTS ON SCHEMA ANIMAL_DATA;
+
+GRANT USAGE ON DATABASE ANIMAL_DATA TO ROLE ACCOUNTADMIN;
+GRANT USAGE ON SCHEMA PUBLIC TO ROLE ACCOUNTADMIN;
+GRANT USAGE ON CORTEX SEARCH SERVICE exact_type_search TO ROLE ACCOUNTADMIN;
+GRANT USAGE ON CORTEX SEARCH SERVICE condition_match_search TO ROLE ACCOUNTADMIN;
+
+
+
+-- SELECT PARSE_JSON(
+--   SNOWFLAKE.CORTEX.SEARCH_PREVIEW(
+--       'cortex_search_db.services.transcript_search_service',
+--       '{
+--         "query": "internet issues",
+--         "columns":[
+--             "transcript_text",
+--             "region"
+--         ],
+--         "filter": {"@eq": {"region": "North America"} },
+--         "limit":1
+--       }'
+--   )
+-- )['results'] as results;
+
+SELECT PARSE_JSON(
+  SNOWFLAKE.CORTEX.SEARCH_PREVIEW(
+    'ANIMAL_DATA.PUBLIC.exact_type_search',
+    '{
+      "query": "cats",
+      "columns": ["chunk", "relative_path"],
+      "limit": 5
+    }'
+  )
+)['results'] as results;
+
