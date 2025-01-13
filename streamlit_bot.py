@@ -5,20 +5,20 @@ from datetime import date
 from snowflake.core import Root
 import json
 
-from dotenv import load_dotenv
+#from dotenv import load_dotenv
 from snowflake.snowpark.session import Session
 import os
 
-load_dotenv()
+#load_dotenv()
 
 connection_params = {
-  "account":  os.getenv("SNOWFLAKE_ACCOUNT"),
-  "user": os.getenv("SNOWFLAKE_USER"),
-  "password": os.getenv("SNOWFLAKE_PASSWORD"),
-  "role": os.getenv("SNOWFLAKE_ROLE"),
-  "database": os.getenv("SNOWFLAKE_DATABASE"),
-  "schema": os.getenv("SNOWFLAKE_SCHEMA"),
-  "warehouse": os.getenv("SNOWFLAKE_WAREHOUSE")
+    "account": st.secrets["snowflake"]["account"],
+    "user": st.secrets["snowflake"]["user"],
+    "password": st.secrets["snowflake"]["password"],
+    "role": st.secrets["snowflake"]["role"],
+    "database": st.secrets["snowflake"]["database"],
+    "schema": st.secrets["snowflake"]["schema"],
+    "warehouse": st.secrets["snowflake"]["warehouse"]
 }
 
 session = Session.builder.configs(connection_params).create()
