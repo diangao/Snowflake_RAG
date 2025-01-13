@@ -1,5 +1,9 @@
-# Snowflake Chatbot
-
+# Welcome to [FurWell](https://furwell.streamlit.app/)! 
+To access the app, follow this [link](https://furwell.streamlit.app/)!
+Contributors:
+[Angela Tao](https://github.com/XinranTaoAngela)
+[Dian Gao](https://github.com/diangao)
+Xinwei Song
 A Streamlit-based chatbot that uses Snowflake's capabilities to provide intelligent responses about animal health data.
 
 ## Features
