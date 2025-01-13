@@ -20,3 +20,6 @@ __pycache__/
 
 # System files
 .DS_Store 
+
+#Toml files
+.secret.toml
