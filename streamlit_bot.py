@@ -214,7 +214,7 @@ def assign_pet_type(chunk: str) -> str:
         {chunk}
         """
 
-        pet_type = session.sql("SELECT SNOWFLAKE.CORTEX.COMPLETE(?, ?)", params=['mistral-large', prompt]).collect()[0][0]
+        pet_type = session.sql("SELECT SNOWFLAKE.CORTEX.COMPLETE(?, ?)", params=['mistral-large2', prompt]).collect()[0][0]
         # Validate response and default to 'Undefined' if not in expected values
         return pet_type
 
@@ -304,7 +304,13 @@ def add_pet():
                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (st.session_state.current_user, pet_name, pet_breed, pet_type, pet_gender, age)
             ).collect()
-            
+            st.write(f"Debugging Inputs:")
+            st.write(f"user_id: {st.session_state.current_user}")
+            st.write(f"name: {pet_name}")
+            st.write(f"breed: {pet_breed}")
+            st.write(f"type: {pet_type}")
+            st.write(f"gender: {pet_gender}")
+            st.write(f"age: {age}")
             inserted_id = session.sql(
                 """SELECT id FROM pets 
                    WHERE user_id = ? AND name = ? 
