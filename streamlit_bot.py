@@ -82,8 +82,8 @@ COLUMNS=["chunk", "relative_path"]
 
 svc = root.databases[CORTEX_SEARCH_DATABASE].schemas[CORTEX_SEARCH_SCHEMA].cortex_search_services[CORTEX_SEARCH_SERVICE]
 
-def get_similar_chunks_search_service(query):
-    response = svc.search(query, COLUMNS, limit=NUM_CHUNKS)
+def get_similar_chunks_search_service(query, type):
+    response = svc.search(query, COLUMNS, limit=NUM_CHUNKS,filter=type)
     return response.json()  
 
 def get_chat_history():
@@ -124,7 +124,9 @@ def summarize_question_with_history(chat_history, question):
 
 
 def create_prompt (myquestion):
-
+    pet_info = get_pet_info()
+    type = pet_info['TYPE']
+    st.write(type)
     chat_history = get_chat_history()   
     clinical_history = []
     daily_checkins = []
@@ -142,11 +144,11 @@ def create_prompt (myquestion):
         daily_checkins.append((row['DATE'],row['CONDITION'],row['NOTES']))
 
 
-    if chat_history != []: #There is chat_history, so not first question
+    if chat_history!= []: #There is chat_history, so not first question
         question_summary = summarize_question_with_history(chat_history, myquestion)
-        prompt_context =  get_similar_chunks_search_service(question_summary)
+        prompt_context =  get_similar_chunks_search_service(question_summary, type)
     else:
-        prompt_context = get_similar_chunks_search_service(myquestion) #First question when using history
+        prompt_context = get_similar_chunks_search_service(myquestion, type) #First question when using history
     prompt = f"""
            You are an expert chat assistance to offer professional suggestions about pet daily care and disease related problems.
            You need to extract information from the CONTEXT provided between <context> and </context> tags.
@@ -194,6 +196,27 @@ def answer_question(myquestion):
         params=[st.session_state.model_name, prompt]
         ).collect()[0]['SNOWFLAKE.CORTEX.COMPLETE(?, ?)']
     return response, relative_paths
+
+
+def assign_pet_type(chunk: str) -> str:
+        # Use LLM to determine pet type
+        prompt = f"""
+        Given the following text, classify it as one of the following categories:
+        - Large Cat
+        - Small Cat
+        - Large Dog
+        - Small Dog
+        - Undefined
+
+        You must ONLY respond with one of these exact categories (no additional text or explanation). If the text cannot be clearly classified, respond with 'Undefined'.
+
+        Text:
+        {chunk}
+        """
+
+        pet_type = session.sql("SELECT SNOWFLAKE.CORTEX.COMPLETE(?, ?)", params=['mistral-large', prompt]).collect()[0][0]
+        # Validate response and default to 'Undefined' if not in expected values
+        return pet_type
 
 # -------------------------------
 # Registration & Login Functions
@@ -258,14 +281,16 @@ def add_pet():
         today = date.today()
         age = today.year - pet_birthday.year - ((today.month, today.day) < 
               (pet_birthday.month, pet_birthday.day))
-        
         submitted = st.form_submit_button("Add Pet")
-
         if submitted:
             if not pet_name or not pet_breed:
                 st.error("Please fill out all required fields!")
                 return
-                
+            pet_type = assign_pet_type(pet_breed)
+            st.write(pet_type)
+            if pet_type=='Undefined':
+                st.error("Try to provide more information about the breed!")
+                return
             result = session.sql("SELECT name FROM pets WHERE user_id = ?", 
                                (st.session_state.current_user,)).collect()
             existing_names = [row['NAME'] for row in result]
@@ -275,9 +300,9 @@ def add_pet():
                 return
                 
             session.sql(
-                """INSERT INTO pets (user_id, name, breed, gender, age) 
-                   VALUES (?, ?, ?, ?, ?)""",
-                (st.session_state.current_user, pet_name, pet_breed, pet_gender, age)
+                """INSERT INTO pets (user_id, name, breed, type, gender, age) 
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (st.session_state.current_user, pet_name, pet_breed, pet_type, pet_gender, age)
             ).collect()
             
             inserted_id = session.sql(
@@ -463,7 +488,7 @@ def config_options():
 def get_pet_info():
     if st.session_state.current_pet is not None:
         result = session.sql(
-            """SELECT name, breed, gender, age 
+            """SELECT name, breed, type, gender, age 
                FROM pets WHERE id = ?""",
             (st.session_state.current_pet,)
         ).collect()
@@ -514,7 +539,8 @@ def main():
             if pet_info:
                 st.markdown(f"""
                     **Currently Managing:** {pet_info['NAME']}  
-                    **Breed:** {pet_info['BREED']}  
+                    **Breed:** {pet_info['BREED']}
+                    **Type:** {pet_info['TYPE']}  
                     **Gender:** {pet_info['GENDER']}  
                     **Age:** {pet_info['AGE']} years  
                 """)
