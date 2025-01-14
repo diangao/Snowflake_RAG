@@ -3,8 +3,8 @@
 
 - Contributors:
 - [Angela Tao](https://github.com/XinranTaoAngela):xinran.tao2001@gmail.com
-- [Dian Gao](https://github.com/diangao)
-- Xinwei Song
+- [Dian Gao](https://github.com/diangao):
+- [Xinwei Song](https://github.com/XinweiSong1018):song.xinwe@northeastern.edu
 
 - A Streamlit-based chatbot that uses Snowflake's capabilities to provide intelligent responses about animal health data.
 
