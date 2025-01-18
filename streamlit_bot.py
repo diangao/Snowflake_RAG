@@ -1,6 +1,6 @@
 import streamlit as st
 from streamlit_extras.let_it_rain import rain
-#from snowflake.snowpark.context import get_active_session
+from snowflake.snowpark.context import get_active_session
 from datetime import date
 from snowflake.core import Root
 import json
@@ -22,6 +22,7 @@ connection_params = {
 }
 
 session = Session.builder.configs(connection_params).create()
+# session = get_active_session()
 
 # -------------------------------
 # Session State Initialization
@@ -72,19 +73,64 @@ def handle_logout():
 CORTEX_SEARCH_DATABASE = "ANIMAL_DATA"
 CORTEX_SEARCH_SCHEMA = "PUBLIC"
 CORTEX_SEARCH_SERVICE = "exact_type_search"
+CORTEX_SEARCH_SERVICE_CONDITION = "condition_match_search"
 
 
 
 root = Root(session)    
 NUM_CHUNKS = 5
 slide_window = 7
-COLUMNS=["chunk", "relative_path"]
+COLUMNS=["chunk", "relative_path", "pet_type"]
 
-svc = root.databases[CORTEX_SEARCH_DATABASE].schemas[CORTEX_SEARCH_SCHEMA].cortex_search_services[CORTEX_SEARCH_SERVICE]
+# svc = root.databases[CORTEX_SEARCH_DATABASE].schemas[CORTEX_SEARCH_SCHEMA].cortex_search_services[CORTEX_SEARCH_SERVICE]
+svc = root.databases[CORTEX_SEARCH_DATABASE].schemas[CORTEX_SEARCH_SCHEMA].cortex_search_services[CORTEX_SEARCH_SERVICE_CONDITION]
+
+# def get_similar_chunks_search_service(query, type):
+#     response = svc.search(query, COLUMNS, limit=NUM_CHUNKS,filter=type)
+#     return response.json()  
 
 def get_similar_chunks_search_service(query, type):
-    response = svc.search(query, COLUMNS, limit=NUM_CHUNKS,filter=type)
-    return response.json()  
+    # 构建过滤条件
+    filter_condition = {
+      "@or": [
+          {"@eq": {"pet_type": type}}, {"@eq": {"pet_type": "Undefined"}}
+      ]
+    }
+    # 调试信息：打印 Query 和 Filter
+    # st.write("### Debug: Query and Filter")
+    # st.write(f"Query: `{query}`")
+    # st.write(f"Filter: `{filter_condition}`")
+    
+    # 调用服务
+    try:
+        #DEBUG
+        # query = "causes of loss of appetite, especially Large Dog"
+        # st.write(f"Query: `{query}`")
+        # st.write(f"Filter: `{filter_condition}`")
+        response = svc.search(query, COLUMNS, limit=NUM_CHUNKS, filter=filter_condition)
+        
+        # 调试：打印原始响应
+        # st.write("### Debug: Raw Response")
+        # st.write(response)  # 打印原始文本内容
+
+        json_response = json.loads(response.to_json())
+
+        # 调试信息：打印服务响应
+        # st.write("### Debug: Service Response")
+        # st.write("### Debug: Response Type")
+        st.json(json_response)  # 以 JSON 格式显示完整响应内容
+
+        # 检查结果是否为空
+        # if not json_response.get("results"):
+        #     st.warning("No results found for the given query and filter.")
+        
+        return json_response
+    
+    except Exception as e:
+        # 捕获异常并在前端显示
+        st.error(f"Error occurred while querying the service: {str(e)}")
+        return {"results": []}
+        
 
 def get_chat_history():
     
@@ -122,6 +168,29 @@ def summarize_question_with_history(chat_history, question):
 
     return sumary
 
+def rewrite_query(question):
+    """
+    Use the LLM to rewrite the original query into a more contextually aligned and refined query.
+    """
+    prompt = f"""
+        Rewrite the following question to make it more formal, specific, and aligned to retrieve relevant information from a medical database for pets.
+        The rewritten query should focus on key terms and provide clarity for searching.
+        Answer with only the rewritten query. Do not add any explanation.
+
+        <question>
+        {question}
+        </question>
+    """
+    rewritten_query = session.sql(
+        "SELECT SNOWFLAKE.CORTEX.COMPLETE(?, ?)", 
+        params=[st.session_state.model_name, prompt]
+    ).collect()[0]['SNOWFLAKE.CORTEX.COMPLETE(?, ?)']
+
+    # Remove any extra characters like quotes that might break downstream tasks
+    rewritten_query = rewritten_query.replace("'", "")
+
+    return rewritten_query
+
 
 def create_prompt (myquestion):
     pet_info = get_pet_info()
@@ -146,9 +215,16 @@ def create_prompt (myquestion):
 
     if chat_history!= []: #There is chat_history, so not first question
         question_summary = summarize_question_with_history(chat_history, myquestion)
-        prompt_context =  get_similar_chunks_search_service(question_summary, type)
+        # prompt_context =  get_similar_chunks_search_service(question_summary, type)
+        prompt_context =  get_similar_chunks_search_service(rewrite_query(question_summary), type)
     else:
-        prompt_context = get_similar_chunks_search_service(myquestion, type) #First question when using history
+        # prompt_context = get_similar_chunks_search_service(myquestion, type)
+        prompt_context = get_similar_chunks_search_service(rewrite_query(myquestion), type) #First question when using history
+        
+        # 将搜索结果显示到前端
+        # st.subheader("Search Results")
+        # st.write(prompt_context)
+        
     prompt = f"""
            You are an expert chat assistance to offer professional suggestions about pet daily care and disease related problems.
            You need to extract information from the CONTEXT provided between <context> and </context> tags.
@@ -181,9 +257,10 @@ def create_prompt (myquestion):
            Answer: 
            """
            
-    json_data = json.loads(prompt_context)
+    # json_data = json.loads(prompt_context)
 
-    relative_paths = set(item['relative_path'] for item in json_data['results'])
+    # relative_paths = set(item['relative_path'] for item in json_data['results'])
+    relative_paths = set(item['relative_path'] for item in prompt_context['results'])
 
     return prompt, relative_paths
 
