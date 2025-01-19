@@ -72,19 +72,34 @@ def handle_logout():
 CORTEX_SEARCH_DATABASE = "ANIMAL_DATA"
 CORTEX_SEARCH_SCHEMA = "PUBLIC"
 CORTEX_SEARCH_SERVICE = "exact_type_search"
+CORTEX_SEARCH_SERVICE_CONDITION = "condition_match_search"
 
 
 
 root = Root(session)    
 NUM_CHUNKS = 5
 slide_window = 7
-COLUMNS=["chunk", "relative_path"]
+COLUMNS=["chunk", "relative_path", "pet_type"]
 
-svc = root.databases[CORTEX_SEARCH_DATABASE].schemas[CORTEX_SEARCH_SCHEMA].cortex_search_services[CORTEX_SEARCH_SERVICE]
+svc = root.databases[CORTEX_SEARCH_DATABASE].schemas[CORTEX_SEARCH_SCHEMA].cortex_search_services[CORTEX_SEARCH_SERVICE_CONDITION]
 
 def get_similar_chunks_search_service(query, type):
-    response = svc.search(query, COLUMNS, limit=NUM_CHUNKS,filter=type)
-    return response.json()  
+    # 构建过滤条件
+    filter_condition = {
+      "@or": [
+          {"@eq": {"pet_type": type}}, {"@eq": {"pet_type": "Undefined"}}
+      ]
+    }
+    
+    try:
+        response = svc.search(query, COLUMNS, limit=NUM_CHUNKS, filter=filter_condition)
+        
+        return json_response
+    
+    except Exception as e:
+        st.error(f"Error occurred while querying the service: {str(e)}")
+        return {"results": []}
+        
 
 def get_chat_history():
     
@@ -122,11 +137,34 @@ def summarize_question_with_history(chat_history, question):
 
     return sumary
 
+def rewrite_query(question):
+    """
+    Use the LLM to rewrite the original query into a more contextually aligned and refined query.
+    """
+    prompt = f"""
+        Rewrite the following question to make it more formal, specific, and aligned to retrieve relevant information from a medical database for pets.
+        The rewritten query should focus on key terms and provide clarity for searching.
+        Answer with only the rewritten query. Do not add any explanation.
+
+        <question>
+        {question}
+        </question>
+    """
+    rewritten_query = session.sql(
+        "SELECT SNOWFLAKE.CORTEX.COMPLETE(?, ?)", 
+        params=[st.session_state.model_name, prompt]
+    ).collect()[0]['SNOWFLAKE.CORTEX.COMPLETE(?, ?)']
+
+    # Remove any extra characters like quotes that might break downstream tasks
+    rewritten_query = rewritten_query.replace("'", "")
+
+    return rewritten_query
+
 
 def create_prompt (myquestion):
     pet_info = get_pet_info()
     type = pet_info['TYPE']
-    st.write(type)
+    # st.write(type)
     chat_history = get_chat_history()   
     clinical_history = []
     daily_checkins = []
@@ -146,9 +184,16 @@ def create_prompt (myquestion):
 
     if chat_history!= []: #There is chat_history, so not first question
         question_summary = summarize_question_with_history(chat_history, myquestion)
-        prompt_context =  get_similar_chunks_search_service(question_summary, type)
+        # prompt_context =  get_similar_chunks_search_service(question_summary, type)
+        prompt_context =  get_similar_chunks_search_service(rewrite_query(question_summary), type)
     else:
-        prompt_context = get_similar_chunks_search_service(myquestion, type) #First question when using history
+        # prompt_context = get_similar_chunks_search_service(myquestion, type)
+        prompt_context = get_similar_chunks_search_service(rewrite_query(myquestion), type) #First question when using history
+        
+        # 将搜索结果显示到前端
+        # st.subheader("Search Results")
+        # st.write(prompt_context)
+        
     prompt = f"""
            You are an expert chat assistance to offer professional suggestions about pet daily care and disease related problems.
            You need to extract information from the CONTEXT provided between <context> and </context> tags.
@@ -160,6 +205,11 @@ def create_prompt (myquestion):
            
            Do not mention the CONTEXT used in your answer.
            Do not mention the CHAT HISTORY used in your asnwer.
+
+           - Explain medical terms or complex issues in language that anyone without medical knowledge can understand.
+           - Provide ACTIONABLE ADVICE where applicable.
+           - Keep the response conversational and easy to understand.
+           - Be empathetic and reassuring when addressing concerns.
 
            Only anwer the question if you can extract it from the CONTEXT provideed.
            
@@ -181,9 +231,10 @@ def create_prompt (myquestion):
            Answer: 
            """
            
-    json_data = json.loads(prompt_context)
+    # json_data = json.loads(prompt_context)
 
-    relative_paths = set(item['relative_path'] for item in json_data['results'])
+    # relative_paths = set(item['relative_path'] for item in json_data['results'])
+    relative_paths = set(item['relative_path'] for item in prompt_context['results'])
 
     return prompt, relative_paths
 
@@ -257,10 +308,22 @@ def login_user():
                 st.session_state.user_logged_in = True
                 st.session_state.current_user = session.sql("select ID from users where username=?",
                                                           (username,)).collect()[0]['ID']
-                if not st.session_state.pets:
-                    change_view("Add Another Pet")
-                else:
+                
+                # Check if user has any pets
+                result = session.sql("SELECT COUNT(*) as pet_count FROM pets WHERE user_id = ?",
+                                   (st.session_state.current_user,)).collect()
+                has_pets = result[0]['PET_COUNT'] > 0
+                
+                if has_pets:
+                    # If user has pets, load them and set current pet to the first one
+                    pets_result = session.sql("SELECT id FROM pets WHERE user_id = ?",
+                                            (st.session_state.current_user,)).collect()
+                    st.session_state.pets = [row['ID'] for row in pets_result]
+                    st.session_state.current_pet = st.session_state.pets[0]
                     change_view("Current Pet")
+                else:
+                    # If no pets, direct to add pet page
+                    change_view("Add Another Pet")
                 st.rerun()
             else:
                 st.error("Invalid username or password")
@@ -287,7 +350,7 @@ def add_pet():
                 st.error("Please fill out all required fields!")
                 return
             pet_type = assign_pet_type(pet_breed)
-            st.write(pet_type)
+            # st.write(pet_type)
             if pet_type=='Undefined':
                 st.error("Try to provide more information about the breed!")
                 return
@@ -582,9 +645,6 @@ def main():
                     
                     st.session_state.messages[st.session_state.current_pet].append({"role": "assistant", "content": response})
                                 
-                    st.session_state.messages[st.session_state.current_pet].append(
-                        {"role": "assistant", "content": response}
-                    )
 
         elif st.session_state.current_view == "Add Another Pet":
             add_pet()
