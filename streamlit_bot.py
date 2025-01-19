@@ -93,7 +93,7 @@ def get_similar_chunks_search_service(query, type):
     
     try:
         response = svc.search(query, COLUMNS, limit=NUM_CHUNKS, filter=filter_condition)
-        
+        json_response = json.loads(response.to_json())
         return json_response
     
     except Exception as e:
